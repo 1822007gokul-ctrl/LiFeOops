@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>LifeOps</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand-wrap">
+          <div class="brand-mark">L</div>
+          <div>
+            <p class="brand-label">Personal productivity</p>
+            <h1>LifeOps</h1>
+          </div>
+        </div>
+
+        <nav class="nav">
+          <button class="nav-item active" type="button">
+            <span>Dashboard</span>
+          </button>
+          <button class="nav-item" type="button">
+            <span>Tasks</span>
+          </button>
+          <button class="nav-item" type="button">
+            <span>Calendar</span>
+          </button>
+          <button class="nav-item" type="button">
+            <span>Reports</span>
+          </button>
+        </nav>
+      </aside>
+
+      <main class="main-panel">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">Overview</p>
+            <h2>Dashboard</h2>
+          </div>
+          <button class="primary-btn" id="addTaskBtn" type="button">+ New task</button>
+        </header>
+
+        <section class="stats-grid" id="statsGrid">
+          <article class="stat-card">
+            <p>Total tasks</p>
+            <h3 id="totalTasks">0</h3>
+          </article>
+          <article class="stat-card">
+            <p>Completed</p>
+            <h3 id="completedTasks">0</h3>
+          </article>
+          <article class="stat-card">
+            <p>Pending</p>
+            <h3 id="pendingTasks">0</h3>
+          </article>
+          <article class="stat-card overdue-card">
+            <p>Overdue</p>
+            <h3 id="overdueTasks">0</h3>
+          </article>
+        </section>
+
+        <section class="content-grid">
+          <div class="task-form-panel">
+            <div class="panel-header">
+              <h3 id="formTitle">Add a task</h3>
+            </div>
+
+            <form id="taskForm">
+              <div class="form-group">
+                <label for="title">Task title</label>
+                <input id="title" name="title" type="text" placeholder="e.g. Submit assignment" required />
+              </div>
+
+              <div class="form-group">
+                <label for="description">Description</label>
+                <textarea id="description" name="description" rows="3" placeholder="Add a short note or details..."></textarea>
+              </div>
+
+              <div class="two-column">
+                <div class="form-group">
+                  <label for="dueDate">Due date</label>
+                  <input id="dueDate" name="dueDate" type="date" required />
+                </div>
+
+                <div class="form-group">
+                  <label for="priority">Priority</label>
+                  <select id="priority" name="priority">
+                    <option value="Low">Low</option>
+                    <option value="Medium" selected>Medium</option>
+                    <option value="High">High</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="form-group">
+                <label for="category">Category</label>
+                <input id="category" name="category" type="text" placeholder="e.g. Study, Work, Personal" required />
+              </div>
+
+              <div class="form-actions">
+                <button class="secondary-btn" id="cancelEditBtn" type="button">Cancel</button>
+                <button class="primary-btn" type="submit">Save task</button>
+              </div>
+            </form>
+          </div>
+
+          <div class="task-board-panel">
+            <div class="board-header">
+              <h3>Task overview</h3>
+
+              <div class="filters">
+                <select id="priorityFilter">
+                  <option value="All">All priorities</option>
+                  <option value="Low">Low</option>
+                  <option value="Medium">Medium</option>
+                  <option value="High">High</option>
+                </select>
+
+                <select id="categoryFilter">
+                  <option value="All">All categories</option>
+                </select>
+              </div>
+            </div>
+
+            <div id="taskSections" class="task-sections"></div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="script.js"></script>
+  </body>
+</html>
