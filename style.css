@@ -193,6 +193,19 @@ button {
   width: 100%;
 }
 
+.notification-toggle {
+  width: 100%;
+  margin-top: 8px;
+}
+
+.notification-status {
+  display: block;
+  margin-top: 6px;
+  color: rgba(255, 255, 255, 0.8);
+  font-size: 0.76rem;
+  line-height: 1.4;
+}
+
 .nav-item {
   background: transparent;
   border: 0;
@@ -485,6 +498,11 @@ button {
   color: var(--primary);
 }
 
+.task-type-pill {
+  background: #ecfdf5;
+  color: #047857;
+}
+
 .task-description {
   margin: 0 0 12px;
   color: var(--muted);
@@ -498,10 +516,22 @@ button {
   gap: 10px;
 }
 
+.task-date-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
 .due-date {
   color: var(--muted);
   font-weight: 600;
   font-size: 0.86rem;
+}
+
+.task-countdown {
+  color: var(--primary);
+  font-size: 0.8rem;
+  font-weight: 700;
 }
 
 .task-actions {

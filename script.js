@@ -1,4 +1,9 @@
 const STORAGE_KEY = 'lifeops.tasks';
+const NOTIFICATION_STORAGE_KEY = 'lifeops.notificationState';
+const NOTIFICATION_LEAD_TIME = 15 * 60 * 1000;
+const DAILY_MINUTE_LEAD_MS = 60 * 1000;
+const OCCASIONAL_DAY_LEAD_MS = 24 * 60 * 60 * 1000;
+const OCCASIONAL_15MIN_LEAD_MS = 15 * 60 * 1000;
 
 const authView = document.getElementById('authView');
 const appView = document.getElementById('appView');
@@ -18,6 +23,8 @@ const formTitle = document.getElementById('formTitle');
 const titleInput = document.getElementById('title');
 const descriptionInput = document.getElementById('description');
 const dueDateInput = document.getElementById('dueDate');
+const dueTimeInput = document.getElementById('dueTime');
+const taskTypeInput = document.getElementById('taskType');
 const priorityInput = document.getElementById('priority');
 const categoryInput = document.getElementById('category');
 const cancelEditBtn = document.getElementById('cancelEditBtn');
@@ -30,11 +37,14 @@ const statTotalTasks = document.getElementById('totalTasks');
 const statCompletedTasks = document.getElementById('completedTasks');
 const statPendingTasks = document.getElementById('pendingTasks');
 const statOverdueTasks = document.getElementById('overdueTasks');
+const notificationToggleBtn = document.getElementById('notificationToggleBtn');
+const notificationStatus = document.getElementById('notificationStatus');
 
 let tasks = loadTasks();
 let editingTaskId = null;
 let authMode = 'login';
 let supabaseClient = null;
+let countdownIntervalId = null;
 
 function getSupabaseConfig() {
   const globalConfig = window.LIFEOPS_SUPABASE_CONFIG;
@@ -50,7 +60,14 @@ function initSupabase() {
   const config = getSupabaseConfig();
 
   if (window.supabase && window.supabase.createClient) {
-    supabaseClient = window.supabase.createClient(config.url, config.anonKey);
+    supabaseClient = window.supabase.createClient(config.url, config.anonKey, {
+      auth: {
+        persistSession: true,
+        autoRefreshToken: true,
+        detectSessionInUrl: false,
+        storage: window.localStorage
+      }
+    });
     return;
   }
 
@@ -218,24 +235,40 @@ function initAuthUi() {
 
   authForm.addEventListener('submit', handleAuthSubmit);
   logoutBtn.addEventListener('click', handleLogout);
+  if (notificationToggleBtn) {
+    notificationToggleBtn.addEventListener('click', toggleNotifications);
+  }
+  updateNotificationUi();
   setAuthMode('login');
 }
 
 function loadTasks() {
   const savedTasks = localStorage.getItem(STORAGE_KEY);
-  return savedTasks ? JSON.parse(savedTasks) : [];
+
+  if (!savedTasks) {
+    return [];
+  }
+
+  try {
+    const parsedTasks = JSON.parse(savedTasks);
+    return Array.isArray(parsedTasks) ? parsedTasks.map(normalizeTask) : [];
+  } catch (error) {
+    return [];
+  }
 }
 
 function saveTasks() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(tasks));
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(tasks.map(normalizeTask)));
 }
 
 function resetForm() {
   form.reset();
   editingTaskId = null;
   formTitle.textContent = 'Add a task';
+  taskTypeInput.value = 'daily';
   priorityInput.value = 'Medium';
   dueDateInput.value = getTodayString();
+  dueTimeInput.value = getDefaultDueTime();
 }
 
 function getTodayString() {
@@ -243,6 +276,48 @@ function getTodayString() {
   const offset = today.getTimezoneOffset();
   const localDate = new Date(today.getTime() - offset * 60 * 1000);
   return localDate.toISOString().split('T')[0];
+}
+
+function getDefaultDueTime() {
+  const now = new Date();
+  const minutes = now.getMinutes();
+  const roundedMinutes = Math.ceil(minutes / 10) * 10;
+  const adjustedHours = roundedMinutes >= 60 ? now.getHours() + 1 : now.getHours();
+  const normalizedMinutes = roundedMinutes >= 60 ? 0 : roundedMinutes;
+  const target = new Date(now.getFullYear(), now.getMonth(), now.getDate(), adjustedHours, normalizedMinutes);
+
+  const hours = String(target.getHours()).padStart(2, '0');
+  const mins = String(target.getMinutes()).padStart(2, '0');
+  return `${hours}:${mins}`;
+}
+
+function getTaskDueTime(task) {
+  return task && task.dueTime ? task.dueTime : '23:59';
+}
+
+function getTimeLabel(date) {
+  return new Intl.DateTimeFormat('en-US', {
+    hour: 'numeric',
+    minute: '2-digit'
+  }).format(date);
+}
+
+function getTaskDeadline(task) {
+  const dateString = task && task.dueDate ? task.dueDate : getTodayString();
+  const timeString = getTaskDueTime(task);
+  const [year, month, day] = dateString.split('-').map(Number);
+  const [hours, minutes] = timeString.split(':').map(Number);
+  return new Date(year, month - 1, day, hours, minutes);
+}
+
+function clearNotificationStateForTask(taskId) {
+  const state = loadNotificationState();
+  Object.keys(state).forEach(key => {
+    if (key.startsWith(`${taskId}-`)) {
+      delete state[key];
+    }
+  });
+  saveNotificationState(state);
 }
 
 function formatDate(dateString) {
@@ -256,11 +331,288 @@ function formatDate(dateString) {
   }).format(date);
 }
 
-function getSectionTasks(taskList) {
-  const todayString = getTodayString();
+function formatDeadline(dateString, timeString) {
+  const safeDate = dateString || getTodayString();
+  const safeTime = timeString || '23:59';
+  const [year, month, day] = safeDate.split('-').map(Number);
+  const [hours, minutes] = safeTime.split(':').map(Number);
+  const dueDate = new Date(year, month - 1, day, hours, minutes);
+
+  return new Intl.DateTimeFormat('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit'
+  }).format(dueDate);
+}
+
+function formatDuration(ms) {
+  const totalSeconds = Math.max(1, Math.floor(Math.abs(ms) / 1000));
+  const days = Math.floor(totalSeconds / 86400);
+  const hours = Math.floor((totalSeconds % 86400) / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const parts = [];
+
+  if (days > 0) parts.push(`${days}d`);
+  if (hours > 0) parts.push(`${hours}h`);
+  if (minutes > 0) parts.push(`${minutes}m`);
+  if (parts.length === 0 && seconds > 0) parts.push(`${seconds}s`);
+  if (parts.length === 0) parts.push('0s');
+
+  return parts.slice(0, 3).join(' ');
+}
+
+function getCountdownText(task) {
+  if (!task || task.completed) {
+    return '✓ Completed';
+  }
+
+  const deadline = getTaskDeadline(task);
+  const remainingMs = deadline.getTime() - Date.now();
+
+  if (remainingMs <= 0) {
+    return `⚠️ Overdue by ${formatDuration(remainingMs)}`;
+  }
+
+  const totalSeconds = Math.ceil(remainingMs / 1000);
+
+  if (totalSeconds < 60) {
+    return `⏳ ${totalSeconds}s remaining`;
+  }
+
+  const days = Math.floor(totalSeconds / 86400);
+  const hours = Math.floor((totalSeconds % 86400) / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+
+  if (days > 0) {
+    return `⏳ ${days}d ${hours}h ${minutes}m remaining`;
+  }
+
+  if (hours > 0) {
+    return `⏳ ${hours}h ${minutes}m remaining`;
+  }
+
+  return `⏳ ${minutes}m remaining`;
+}
+
+function getNotificationLeadTimeMs() {
+  return NOTIFICATION_LEAD_TIME;
+}
+
+function getTaskType(task) {
+  if (!task || task.taskType === 'occasional') {
+    return 'occasional';
+  }
+
+  return 'daily';
+}
+
+function normalizeTask(task) {
+  if (!task) return task;
 
   return {
-    overdue: taskList.filter(task => !task.completed && task.dueDate < todayString),
+    ...task,
+    dueTime: task.dueTime || '23:59',
+    taskType: getTaskType(task)
+  };
+}
+
+function getNotificationOverride(name, fallbackValue) {
+  const overrides = window.LIFEOPS_NOTIFICATION_OVERRIDES || {};
+  const value = overrides[name];
+
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+    return value;
+  }
+
+  return fallbackValue;
+}
+
+function getReminderText(remainingMs) {
+  const totalSeconds = Math.max(0, Math.ceil(remainingMs / 1000));
+
+  if (totalSeconds < 60) {
+    return 'due in less than a minute.';
+  }
+
+  const minutes = Math.max(1, Math.round(totalSeconds / 60));
+
+  if (minutes === 1) {
+    return 'due in 1 minute.';
+  }
+
+  return `due in ${minutes} minutes.`;
+}
+
+function loadNotificationState() {
+  try {
+    const raw = localStorage.getItem(NOTIFICATION_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch (error) {
+    return {};
+  }
+}
+
+function saveNotificationState(state) {
+  localStorage.setItem(NOTIFICATION_STORAGE_KEY, JSON.stringify(state));
+}
+
+function getNotificationKey(taskId, reminderType) {
+  return `${taskId}-${reminderType}`;
+}
+
+function isNotificationSent(taskId, reminderType) {
+  const state = loadNotificationState();
+  return Boolean(state[getNotificationKey(taskId, reminderType)]);
+}
+
+function markNotificationSent(taskId, reminderType) {
+  const state = loadNotificationState();
+  state[getNotificationKey(taskId, reminderType)] = true;
+  saveNotificationState(state);
+}
+
+function sendBrowserNotification(title, body) {
+  if (!('Notification' in window) || Notification.permission !== 'granted') {
+    return;
+  }
+
+  try {
+    new Notification(title, { body });
+  } catch (error) {
+    console.error('Notification send failed:', error);
+  }
+}
+
+function updateNotificationUi() {
+  if (!notificationToggleBtn || !notificationStatus) return;
+
+  if (!('Notification' in window)) {
+    notificationToggleBtn.disabled = true;
+    notificationToggleBtn.textContent = '🔔 Notifications unsupported';
+    notificationStatus.textContent = 'Notifications: Unsupported';
+    return;
+  }
+
+  notificationToggleBtn.disabled = false;
+
+  if (Notification.permission === 'granted') {
+    notificationToggleBtn.textContent = '🔔 Notifications Enabled';
+    notificationStatus.textContent = 'Notifications: Enabled';
+    return;
+  }
+
+  if (Notification.permission === 'denied') {
+    notificationToggleBtn.textContent = '🔔 Enable Notifications';
+    notificationStatus.textContent = 'Notifications blocked. Enable in browser settings.';
+    return;
+  }
+
+  notificationToggleBtn.textContent = '🔔 Enable Notifications';
+  notificationStatus.textContent = 'Notifications: Off';
+}
+
+async function toggleNotifications() {
+  if (!('Notification' in window)) {
+    notificationStatus.textContent = 'Notifications are not supported in this browser.';
+    return;
+  }
+
+  if (Notification.permission === 'denied') {
+    notificationStatus.textContent = 'Notification permission is denied. Enable browser notifications manually in your browser settings.';
+    updateNotificationUi();
+    return;
+  }
+
+  if (Notification.permission === 'granted') {
+    notificationStatus.textContent = 'LifeOps notifications enabled.';
+    updateNotificationUi();
+    return;
+  }
+
+  const permission = await Notification.requestPermission();
+
+  if (permission === 'granted') {
+    notificationStatus.textContent = 'LifeOps notifications enabled.';
+  } else if (permission === 'denied') {
+    notificationStatus.textContent = 'Notification permission was denied. Enable browser notifications manually in your browser settings.';
+  } else {
+    notificationStatus.textContent = 'Notification permission was not granted.';
+  }
+
+  updateNotificationUi();
+}
+
+function checkTaskNotifications() {
+  if (!('Notification' in window) || Notification.permission !== 'granted') {
+    return;
+  }
+
+  const now = Date.now();
+
+  tasks.forEach(task => {
+    if (!task || task.completed || !task.dueDate || !task.dueTime) {
+      return;
+    }
+
+    const taskType = getTaskType(task);
+    const deadline = getTaskDeadline(task).getTime();
+    const remainingTime = deadline - now;
+
+    if (taskType === 'daily') {
+      if (!isNotificationSent(task.id, 'daily-1min') && remainingTime > 0 && remainingTime <= getNotificationOverride('dailyLeadMs', DAILY_MINUTE_LEAD_MS) + 15000) {
+        sendBrowserNotification('LifeOps Reminder', `${task.title} is due in 1 minute.`);
+        markNotificationSent(task.id, 'daily-1min');
+        return;
+      }
+
+      if (!isNotificationSent(task.id, 'daily-due') && remainingTime <= 0) {
+        sendBrowserNotification('LifeOps — Task Due', `${task.title} is due now.`);
+        markNotificationSent(task.id, 'daily-due');
+      }
+      return;
+    }
+
+    const oneDayLeadTime = getNotificationOverride('occasionalDayLeadMs', OCCASIONAL_DAY_LEAD_MS);
+    const fifteenMinLeadTime = getNotificationOverride('occasional15MinLeadMs', OCCASIONAL_15MIN_LEAD_MS);
+
+    if (!isNotificationSent(task.id, '1day') && remainingTime > 0 && remainingTime <= oneDayLeadTime + 15000 && remainingTime > fifteenMinLeadTime) {
+      const dayLabel = getTimeLabel(new Date(deadline));
+      sendBrowserNotification('LifeOps — Tomorrow', `${task.title} is tomorrow at ${dayLabel}.`);
+      markNotificationSent(task.id, '1day');
+      return;
+    }
+
+    if (!isNotificationSent(task.id, '15min') && remainingTime > 0 && remainingTime <= fifteenMinLeadTime + 15000 && remainingTime > 0) {
+      sendBrowserNotification('LifeOps Reminder', `${task.title} is due in 15 minutes.`);
+      markNotificationSent(task.id, '15min');
+      return;
+    }
+
+    if (!isNotificationSent(task.id, 'due') && remainingTime <= 0) {
+      sendBrowserNotification('LifeOps — Task Due', `${task.title} is due now.`);
+      markNotificationSent(task.id, 'due');
+    }
+  });
+}
+
+function ensureCountdownTimer() {
+  if (countdownIntervalId !== null) return;
+
+  countdownIntervalId = setInterval(() => {
+    renderAll();
+    checkTaskNotifications();
+  }, 1000);
+}
+
+function getSectionTasks(taskList) {
+  const todayString = getTodayString();
+  const now = Date.now();
+
+  return {
+    overdue: taskList.filter(task => !task.completed && getTaskDeadline(task).getTime() < now),
     today: taskList.filter(task => !task.completed && task.dueDate === todayString),
     upcoming: taskList.filter(task => !task.completed && task.dueDate > todayString),
     completed: taskList.filter(task => task.completed)
@@ -271,7 +623,7 @@ function updateStats() {
   const total = tasks.length;
   const completed = tasks.filter(task => task.completed).length;
   const pending = tasks.filter(task => !task.completed).length;
-  const overdue = tasks.filter(task => !task.completed && task.dueDate < getTodayString()).length;
+  const overdue = tasks.filter(task => !task.completed && getTaskDeadline(task).getTime() < Date.now()).length;
 
   statTotalTasks.textContent = total;
   statCompletedTasks.textContent = completed;
@@ -312,6 +664,9 @@ function createTaskCard(task) {
   card.className = `task-card ${task.completed ? 'completed' : ''}`;
 
   const priorityClass = `priority-${task.priority.toLowerCase()}`;
+  const dueTime = getTaskDueTime(task);
+  const countdownText = getCountdownText(task);
+  const taskTypeLabel = getTaskType(task) === 'occasional' ? 'Occasional' : 'Routine / Daily';
 
   card.innerHTML = `
     <div class="task-top">
@@ -320,11 +675,15 @@ function createTaskCard(task) {
     </div>
     <div class="task-meta">
       <span class="meta-pill category-pill">${task.category}</span>
+      <span class="meta-pill task-type-pill">${taskTypeLabel}</span>
       <span class="meta-pill">${task.completed ? 'Completed' : 'Active'}</span>
     </div>
     <p class="task-description">${task.description || 'No description provided.'}</p>
     <div class="task-footer">
-      <span class="due-date">Due: ${formatDate(task.dueDate)}</span>
+      <div class="task-date-block">
+        <span class="due-date">Due: ${formatDeadline(task.dueDate, dueTime)}</span>
+        <span class="task-countdown">${countdownText}</span>
+      </div>
       <div class="task-actions">
         <button class="action-btn complete-btn" type="button" data-id="${task.id}">
           ${task.completed ? 'Undo' : 'Complete'}
@@ -407,7 +766,13 @@ function attachCardEvents() {
 function toggleTaskCompletion(taskId) {
   tasks = tasks.map(task => {
     if (task.id === Number(taskId)) {
-      return { ...task, completed: !task.completed };
+      const updatedTask = { ...task, completed: !task.completed };
+
+      if (updatedTask.completed) {
+        clearNotificationStateForTask(updatedTask.id);
+      }
+
+      return updatedTask;
     }
     return task;
   });
@@ -425,6 +790,8 @@ function startEdit(taskId) {
   titleInput.value = task.title;
   descriptionInput.value = task.description;
   dueDateInput.value = task.dueDate;
+  dueTimeInput.value = getTaskDueTime(task);
+  taskTypeInput.value = getTaskType(task) === 'occasional' ? 'occasional' : 'daily';
   priorityInput.value = task.priority;
   categoryInput.value = task.category;
   window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -437,10 +804,12 @@ function deleteTask(taskId) {
   const confirmed = window.confirm(`Delete "${task.title}"?`);
   if (!confirmed) return;
 
-  tasks = tasks.filter(item => item.id !== Number(taskId));
+  const taskIdNumber = Number(taskId);
+  clearNotificationStateForTask(taskIdNumber);
+  tasks = tasks.filter(item => item.id !== taskIdNumber);
   saveTasks();
 
-  if (editingTaskId === Number(taskId)) {
+  if (editingTaskId === taskIdNumber) {
     resetForm();
   }
 
@@ -451,6 +820,7 @@ function renderAll() {
   updateStats();
   updateCategoryFilterOptions();
   renderTaskSections();
+  ensureCountdownTimer();
 }
 
 function handleFormSubmit(event) {
@@ -460,16 +830,19 @@ function handleFormSubmit(event) {
     title: titleInput.value.trim(),
     description: descriptionInput.value.trim(),
     dueDate: dueDateInput.value,
+    dueTime: dueTimeInput.value,
+    taskType: taskTypeInput.value === 'occasional' ? 'occasional' : 'daily',
     priority: priorityInput.value,
     category: categoryInput.value.trim() || 'General'
   };
 
-  if (!taskData.title || !taskData.dueDate) {
-    alert('Please add a title and a due date.');
+  if (!taskData.title || !taskData.dueDate || !taskData.dueTime) {
+    alert('Please add a title, a due date, and a due time.');
     return;
   }
 
   if (editingTaskId !== null) {
+    clearNotificationStateForTask(editingTaskId);
     tasks = tasks.map(task => {
       if (task.id === editingTaskId) {
         return { ...task, ...taskData };
@@ -492,6 +865,9 @@ function handleFormSubmit(event) {
 
 function initTaskDashboard() {
   dueDateInput.value = getTodayString();
+  dueTimeInput.value = getDefaultDueTime();
+  taskTypeInput.value = 'daily';
+  updateNotificationUi();
 
   if (tasks.length === 0) {
     tasks = [
@@ -500,6 +876,8 @@ function initTaskDashboard() {
         title: 'Submit research proposal',
         description: 'Review the final draft and send it to the professor before 5 PM.',
         dueDate: getTodayString(),
+        dueTime: '17:00',
+        taskType: 'daily',
         priority: 'High',
         category: 'Study',
         completed: false,
@@ -510,6 +888,8 @@ function initTaskDashboard() {
         title: 'Renew gym membership',
         description: 'Complete the online payment before the end of the month.',
         dueDate: '2026-08-20',
+        dueTime: '18:30',
+        taskType: 'occasional',
         priority: 'Medium',
         category: 'Personal',
         completed: false,
@@ -520,6 +900,8 @@ function initTaskDashboard() {
         title: 'Review client feedback',
         description: 'Make a short summary of the latest project comments.',
         dueDate: '2026-08-10',
+        dueTime: '09:00',
+        taskType: 'daily',
         priority: 'Low',
         category: 'Work',
         completed: true,

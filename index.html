@@ -75,6 +75,8 @@
         <div class="user-panel">
           <span id="userEmailLabel">Signed in</span>
           <button id="logoutBtn" class="secondary-btn logout-btn" type="button">Logout</button>
+          <button id="notificationToggleBtn" class="secondary-btn notification-toggle" type="button">🔔 Enable Notifications</button>
+          <span id="notificationStatus" class="notification-status">Notifications: Off</span>
         </div>
       </aside>
 
@@ -127,6 +129,21 @@
                 <div class="form-group">
                   <label for="dueDate">Due date</label>
                   <input id="dueDate" name="dueDate" type="date" required />
+                </div>
+
+                <div class="form-group">
+                  <label for="dueTime">Due time</label>
+                  <input id="dueTime" name="dueTime" type="time" required />
+                </div>
+              </div>
+
+              <div class="two-column">
+                <div class="form-group">
+                  <label for="taskType">Task Type</label>
+                  <select id="taskType" name="taskType">
+                    <option value="daily" selected>Routine / Daily</option>
+                    <option value="occasional">Occasional</option>
+                  </select>
                 </div>
 
                 <div class="form-group">
