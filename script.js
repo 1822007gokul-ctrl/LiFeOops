@@ -1,5 +1,18 @@
 const STORAGE_KEY = 'lifeops.tasks';
 
+const authView = document.getElementById('authView');
+const appView = document.getElementById('appView');
+const authForm = document.getElementById('authForm');
+const authEmail = document.getElementById('authEmail');
+const authPassword = document.getElementById('authPassword');
+const authName = document.getElementById('authName');
+const authNameGroup = document.getElementById('authNameGroup');
+const authMessage = document.getElementById('authMessage');
+const authSubmitBtn = document.getElementById('authSubmitBtn');
+const authTabs = document.querySelectorAll('.auth-tab');
+const logoutBtn = document.getElementById('logoutBtn');
+const userEmailLabel = document.getElementById('userEmailLabel');
+
 const form = document.getElementById('taskForm');
 const formTitle = document.getElementById('formTitle');
 const titleInput = document.getElementById('title');
@@ -20,6 +33,193 @@ const statOverdueTasks = document.getElementById('overdueTasks');
 
 let tasks = loadTasks();
 let editingTaskId = null;
+let authMode = 'login';
+let supabaseClient = null;
+
+function getSupabaseConfig() {
+  const globalConfig = window.LIFEOPS_SUPABASE_CONFIG;
+
+  if (!globalConfig || !globalConfig.url || !globalConfig.anonKey) {
+    throw new Error('Supabase configuration is missing. Update supabase-config.js with your public project URL and anon key.');
+  }
+
+  return globalConfig;
+}
+
+function initSupabase() {
+  const config = getSupabaseConfig();
+
+  if (window.supabase && window.supabase.createClient) {
+    supabaseClient = window.supabase.createClient(config.url, config.anonKey);
+    return;
+  }
+
+  throw new Error('Supabase client library failed to load.');
+}
+
+function setAuthMessage(message, type = '') {
+  authMessage.textContent = message;
+  authMessage.className = 'auth-message';
+
+  if (type) {
+    authMessage.classList.add(type);
+  }
+}
+
+function setAuthMode(mode) {
+  authMode = mode;
+  authTabs.forEach(tab => {
+    const active = tab.dataset.mode === mode;
+    tab.classList.toggle('active', active);
+  });
+
+  const isSignup = mode === 'signup';
+  authNameGroup.classList.toggle('hidden', !isSignup);
+  authSubmitBtn.textContent = isSignup ? 'Create Account' : 'Log In';
+  setAuthMessage('');
+
+  if (isSignup) {
+    authName.setAttribute('required', 'required');
+  } else {
+    authName.removeAttribute('required');
+  }
+}
+
+async function handleAuthSubmit(event) {
+  event.preventDefault();
+
+  const email = authEmail.value.trim();
+  const password = authPassword.value.trim();
+  const name = authName.value.trim();
+
+  if (!email || !password) {
+    setAuthMessage('Please enter your email and password.', 'error');
+    return;
+  }
+
+  if (authMode === 'signup' && !name) {
+    setAuthMessage('Please enter your full name.', 'error');
+    return;
+  }
+
+  const submitButton = authSubmitBtn;
+  submitButton.disabled = true;
+  submitButton.textContent = authMode === 'signup' ? 'Creating account...' : 'Logging in...';
+  setAuthMessage('');
+
+  try {
+    if (authMode === 'signup') {
+      const { data, error } = await supabaseClient.auth.signUp({
+        email,
+        password,
+        options: {
+          data: { full_name: name }
+        }
+      });
+
+      if (error) throw error;
+
+      if (data.user && !data.session) {
+        setAuthMessage('Check your email to confirm your account before logging in.', 'success');
+      } else {
+        await showDashboard();
+      }
+    } else {
+      const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
+
+      if (error) throw error;
+      await showDashboard();
+    }
+  } catch (error) {
+    setAuthMessage(error.message || 'Authentication failed. Please try again.', 'error');
+  } finally {
+    submitButton.disabled = false;
+    submitButton.textContent = authMode === 'signup' ? 'Create Account' : 'Log In';
+  }
+}
+
+async function showDashboard() {
+  const { data: { session }, error } = await supabaseClient.auth.getSession();
+
+  if (error) {
+    console.error('Session error:', error);
+    hideDashboard();
+    return;
+  }
+
+  if (!session) {
+    hideDashboard();
+    return;
+  }
+
+  authView.classList.add('hidden');
+  appView.classList.remove('hidden');
+  userEmailLabel.textContent = session.user?.email || 'Signed in';
+  authForm.reset();
+  setAuthMessage('');
+}
+
+function hideDashboard() {
+  appView.classList.add('hidden');
+  authView.classList.remove('hidden');
+  userEmailLabel.textContent = 'Signed in';
+}
+
+async function handleLogout() {
+  const { error } = await supabaseClient.auth.signOut();
+
+  if (error) {
+    setAuthMessage(error.message || 'Logout failed.', 'error');
+    return;
+  }
+
+  hideDashboard();
+  setAuthMode('login');
+  authForm.reset();
+  setAuthMessage('You have been logged out.', 'success');
+}
+
+async function initializeAuth() {
+  try {
+    initSupabase();
+
+    const { data: { session }, error } = await supabaseClient.auth.getSession();
+
+    if (error) {
+      throw error;
+    }
+
+    if (session) {
+      await showDashboard();
+    } else {
+      hideDashboard();
+    }
+
+    supabaseClient.auth.onAuthStateChange((event) => {
+      if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
+        showDashboard();
+      }
+
+      if (event === 'SIGNED_OUT') {
+        hideDashboard();
+      }
+    });
+  } catch (error) {
+    console.error('Auth initialization failed:', error);
+    hideDashboard();
+    setAuthMessage('Authentication is unavailable right now. Check your Supabase config.', 'error');
+  }
+}
+
+function initAuthUi() {
+  authTabs.forEach((tab) => {
+    tab.addEventListener('click', () => setAuthMode(tab.dataset.mode));
+  });
+
+  authForm.addEventListener('submit', handleAuthSubmit);
+  logoutBtn.addEventListener('click', handleLogout);
+  setAuthMode('login');
+}
 
 function loadTasks() {
   const savedTasks = localStorage.getItem(STORAGE_KEY);
@@ -56,12 +256,7 @@ function formatDate(dateString) {
   }).format(date);
 }
 
-function isSameDay(dateA, dateB) {
-  return dateA.toDateString() === dateB.toDateString();
-}
-
 function getSectionTasks(taskList) {
-  const today = new Date();
   const todayString = getTodayString();
 
   return {
@@ -295,8 +490,9 @@ function handleFormSubmit(event) {
   renderAll();
 }
 
-function init() {
+function initTaskDashboard() {
   dueDateInput.value = getTodayString();
+
   if (tasks.length === 0) {
     tasks = [
       {
@@ -350,4 +546,6 @@ priorityFilter.addEventListener('change', renderTaskSections);
 categoryFilter.addEventListener('change', renderTaskSections);
 form.addEventListener('submit', handleFormSubmit);
 
-init();
+initAuthUi();
+initializeAuth();
+initTaskDashboard();
