@@ -1,4 +1,5 @@
 const STORAGE_KEY = 'lifeops.tasks';
+const TASK_TABLE_NAME = 'tasks';
 const NOTIFICATION_STORAGE_KEY = 'lifeops.notificationState';
 const NOTIFICATION_LEAD_TIME = 15 * 60 * 1000;
 const DAILY_MINUTE_LEAD_MS = 60 * 1000;
@@ -40,10 +41,11 @@ const statOverdueTasks = document.getElementById('overdueTasks');
 const notificationToggleBtn = document.getElementById('notificationToggleBtn');
 const notificationStatus = document.getElementById('notificationStatus');
 
-let tasks = loadTasks();
+let tasks = [];
 let editingTaskId = null;
 let authMode = 'login';
 let supabaseClient = null;
+let currentUser = null;
 let countdownIntervalId = null;
 
 function getSupabaseConfig() {
@@ -155,6 +157,107 @@ async function handleAuthSubmit(event) {
   }
 }
 
+function normalizeDbTask(task) {
+  const safe = task || {};
+  const dueDate = safe.due_date ? new Date(safe.due_date) : new Date();
+
+  return {
+    id: safe.id,
+    title: safe.title || 'Untitled task',
+    description: safe.description || '',
+    dueDate: dueDate.toISOString().slice(0, 10),
+    dueTime: dueDate.toISOString().slice(11, 16),
+    priority: safe.priority || 'Medium',
+    category: safe.category || 'General',
+    completed: Boolean(safe.completed),
+    taskType: 'daily',
+    createdAt: new Date().toISOString()
+  };
+}
+
+function toIsoDueDateValue(task) {
+  const dateString = task && task.dueDate ? task.dueDate : getTodayString();
+  const timeString = task && task.dueTime ? task.dueTime : '23:59';
+  const timestamp = new Date(`${dateString}T${timeString}:00`);
+  return timestamp.toISOString();
+}
+
+function mapAppTaskToDb(task, userId) {
+  const safeTask = normalizeTask(task || {});
+
+  return {
+    user_id: userId,
+    title: safeTask.title || 'Untitled task',
+    description: safeTask.description || '',
+    due_date: toIsoDueDateValue(safeTask),
+    priority: safeTask.priority || 'Medium',
+    category: safeTask.category || 'General',
+    completed: Boolean(safeTask.completed)
+  };
+}
+
+async function fetchUserTasks() {
+  if (!supabaseClient || !currentUser) {
+    tasks = [];
+    return [];
+  }
+
+  const { data, error } = await supabaseClient
+    .from(TASK_TABLE_NAME)
+    .select('*')
+    .eq('user_id', currentUser.id)
+    .order('due_date', { ascending: true });
+
+  if (error) {
+    throw error;
+  }
+
+  tasks = (data || []).map(normalizeDbTask);
+  return tasks;
+}
+
+async function migrateLegacyLocalTasks() {
+  if (!supabaseClient || !currentUser) {
+    return;
+  }
+
+  const localTasks = loadTasks();
+
+  if (!Array.isArray(localTasks) || localTasks.length === 0) {
+    return;
+  }
+
+  const { data: existingTasks, error: selectError } = await supabaseClient
+    .from(TASK_TABLE_NAME)
+    .select('id')
+    .eq('user_id', currentUser.id);
+
+  if (selectError) {
+    throw selectError;
+  }
+
+  if (Array.isArray(existingTasks) && existingTasks.length > 0) {
+    localStorage.removeItem(STORAGE_KEY);
+    return;
+  }
+
+  const rowsToInsert = localTasks.map(task => mapAppTaskToDb(task, currentUser.id));
+
+  if (!rowsToInsert.length) {
+    return;
+  }
+
+  const { error: insertError } = await supabaseClient
+    .from(TASK_TABLE_NAME)
+    .insert(rowsToInsert);
+
+  if (insertError) {
+    throw insertError;
+  }
+
+  localStorage.removeItem(STORAGE_KEY);
+}
+
 async function showDashboard() {
   const { data: { session }, error } = await supabaseClient.auth.getSession();
 
@@ -169,14 +272,29 @@ async function showDashboard() {
     return;
   }
 
+  currentUser = session.user;
   authView.classList.add('hidden');
   appView.classList.remove('hidden');
-  userEmailLabel.textContent = session.user?.email || 'Signed in';
+  userEmailLabel.textContent = currentUser?.email || 'Signed in';
   authForm.reset();
   setAuthMessage('');
+
+  try {
+    await migrateLegacyLocalTasks();
+    await fetchUserTasks();
+    renderAll();
+  } catch (taskError) {
+    console.error('Failed to load tasks for current user:', taskError);
+    setAuthMessage('Unable to load your tasks right now. Please try again.', 'error');
+    tasks = [];
+    renderAll();
+  }
 }
 
 function hideDashboard() {
+  currentUser = null;
+  tasks = [];
+  renderTaskSections();
   appView.classList.add('hidden');
   authView.classList.remove('hidden');
   userEmailLabel.textContent = 'Signed in';
@@ -190,6 +308,9 @@ async function handleLogout() {
     return;
   }
 
+  currentUser = null;
+  tasks = [];
+  renderAll();
   hideDashboard();
   setAuthMode('login');
   authForm.reset();
@@ -212,9 +333,9 @@ async function initializeAuth() {
       hideDashboard();
     }
 
-    supabaseClient.auth.onAuthStateChange((event) => {
+    supabaseClient.auth.onAuthStateChange(async (event) => {
       if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
-        showDashboard();
+        await showDashboard();
       }
 
       if (event === 'SIGNED_OUT') {
@@ -257,8 +378,23 @@ function loadTasks() {
   }
 }
 
-function saveTasks() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(tasks.map(normalizeTask)));
+async function saveTasks() {
+  if (!supabaseClient || !currentUser) {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(tasks.map(normalizeTask)));
+    return;
+  }
+
+  for (const task of tasks) {
+    const dbTask = mapAppTaskToDb(task, currentUser.id);
+    const { error } = await supabaseClient
+      .from(TASK_TABLE_NAME)
+      .upsert({ ...dbTask, id: task.id }, { onConflict: 'id' })
+      .eq('user_id', currentUser.id);
+
+    if (error) {
+      throw error;
+    }
+  }
 }
 
 function resetForm() {
@@ -763,26 +899,45 @@ function attachCardEvents() {
   });
 }
 
-function toggleTaskCompletion(taskId) {
-  tasks = tasks.map(task => {
-    if (task.id === Number(taskId)) {
-      const updatedTask = { ...task, completed: !task.completed };
+async function toggleTaskCompletion(taskId) {
+  const task = tasks.find(item => String(item.id) === String(taskId));
 
-      if (updatedTask.completed) {
-        clearNotificationStateForTask(updatedTask.id);
-      }
+  if (!task || !currentUser || !supabaseClient) {
+    return;
+  }
 
-      return updatedTask;
+  const nextCompletedStatus = !task.completed;
+
+  const { error } = await supabaseClient
+    .from(TASK_TABLE_NAME)
+    .update({
+      completed: nextCompletedStatus
+    })
+    .eq('id', task.id)
+    .eq('user_id', currentUser.id);
+
+  if (error) {
+    console.error('Task completion update failed:', error);
+    setAuthMessage('Unable to update the task status right now.', 'error');
+    return;
+  }
+
+  if (nextCompletedStatus) {
+    clearNotificationStateForTask(task.id);
+  }
+
+  tasks = tasks.map(item => {
+    if (String(item.id) === String(taskId)) {
+      return { ...item, completed: nextCompletedStatus };
     }
-    return task;
+    return item;
   });
 
-  saveTasks();
   renderAll();
 }
 
 function startEdit(taskId) {
-  const task = tasks.find(item => item.id === Number(taskId));
+  const task = tasks.find(item => String(item.id) === String(taskId));
   if (!task) return;
 
   editingTaskId = task.id;
@@ -797,19 +952,29 @@ function startEdit(taskId) {
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
-function deleteTask(taskId) {
-  const task = tasks.find(item => item.id === Number(taskId));
-  if (!task) return;
+async function deleteTask(taskId) {
+  const task = tasks.find(item => String(item.id) === String(taskId));
+  if (!task || !currentUser || !supabaseClient) return;
 
   const confirmed = window.confirm(`Delete "${task.title}"?`);
   if (!confirmed) return;
 
-  const taskIdNumber = Number(taskId);
-  clearNotificationStateForTask(taskIdNumber);
-  tasks = tasks.filter(item => item.id !== taskIdNumber);
-  saveTasks();
+  const { error } = await supabaseClient
+    .from(TASK_TABLE_NAME)
+    .delete()
+    .eq('id', task.id)
+    .eq('user_id', currentUser.id);
 
-  if (editingTaskId === taskIdNumber) {
+  if (error) {
+    console.error('Task deletion failed:', error);
+    setAuthMessage('Unable to delete the task right now.', 'error');
+    return;
+  }
+
+  clearNotificationStateForTask(task.id);
+  tasks = tasks.filter(item => String(item.id) !== String(taskId));
+
+  if (editingTaskId === task.id) {
     resetForm();
   }
 
@@ -823,8 +988,13 @@ function renderAll() {
   ensureCountdownTimer();
 }
 
-function handleFormSubmit(event) {
+async function handleFormSubmit(event) {
   event.preventDefault();
+
+  if (!currentUser || !supabaseClient) {
+    setAuthMessage('Please log in to add tasks.', 'error');
+    return;
+  }
 
   const taskData = {
     title: titleInput.value.trim(),
@@ -841,26 +1011,65 @@ function handleFormSubmit(event) {
     return;
   }
 
-  if (editingTaskId !== null) {
-    clearNotificationStateForTask(editingTaskId);
-    tasks = tasks.map(task => {
-      if (task.id === editingTaskId) {
-        return { ...task, ...taskData };
-      }
-      return task;
-    });
-  } else {
-    tasks.unshift({
-      id: Date.now(),
-      ...taskData,
-      completed: false,
-      createdAt: new Date().toISOString()
-    });
-  }
+  const dbTask = mapAppTaskToDb(taskData, currentUser.id);
 
-  saveTasks();
-  resetForm();
-  renderAll();
+  try {
+    if (editingTaskId !== null) {
+      clearNotificationStateForTask(editingTaskId);
+
+      const { error } = await supabaseClient
+        .from(TASK_TABLE_NAME)
+        .update({
+          ...dbTask,
+          due_date: toIsoDueDateValue(taskData),
+          priority: taskData.priority,
+          category: taskData.category,
+          completed: Boolean(taskData.completed)
+        })
+        .eq('id', editingTaskId)
+        .eq('user_id', currentUser.id);
+
+      if (error) {
+        throw error;
+      }
+
+      tasks = tasks.map(task => {
+        if (String(task.id) === String(editingTaskId)) {
+          return {
+            ...task,
+            title: taskData.title,
+            description: taskData.description,
+            dueDate: taskData.dueDate,
+            dueTime: taskData.dueTime,
+            priority: taskData.priority,
+            category: taskData.category,
+            taskType: taskData.taskType,
+            completed: Boolean(task.completed)
+          };
+        }
+        return task;
+      });
+    } else {
+      const { data, error } = await supabaseClient
+        .from(TASK_TABLE_NAME)
+        .insert([dbTask])
+        .select();
+
+      if (error) {
+        throw error;
+      }
+
+      if (data && data[0]) {
+        tasks.unshift(normalizeDbTask(data[0]));
+      }
+    }
+
+    resetForm();
+    renderAll();
+  } catch (error) {
+    console.error('Task save failed:', error);
+    setAuthMessage('Your task could not be saved. Please try again.', 'error');
+  }
 }
 
 function initTaskDashboard() {
@@ -868,49 +1077,6 @@ function initTaskDashboard() {
   dueTimeInput.value = getDefaultDueTime();
   taskTypeInput.value = 'daily';
   updateNotificationUi();
-
-  if (tasks.length === 0) {
-    tasks = [
-      {
-        id: 1,
-        title: 'Submit research proposal',
-        description: 'Review the final draft and send it to the professor before 5 PM.',
-        dueDate: getTodayString(),
-        dueTime: '17:00',
-        taskType: 'daily',
-        priority: 'High',
-        category: 'Study',
-        completed: false,
-        createdAt: new Date().toISOString()
-      },
-      {
-        id: 2,
-        title: 'Renew gym membership',
-        description: 'Complete the online payment before the end of the month.',
-        dueDate: '2026-08-20',
-        dueTime: '18:30',
-        taskType: 'occasional',
-        priority: 'Medium',
-        category: 'Personal',
-        completed: false,
-        createdAt: new Date().toISOString()
-      },
-      {
-        id: 3,
-        title: 'Review client feedback',
-        description: 'Make a short summary of the latest project comments.',
-        dueDate: '2026-08-10',
-        dueTime: '09:00',
-        taskType: 'daily',
-        priority: 'Low',
-        category: 'Work',
-        completed: true,
-        createdAt: new Date().toISOString()
-      }
-    ];
-    saveTasks();
-  }
-
   renderAll();
 }
 
