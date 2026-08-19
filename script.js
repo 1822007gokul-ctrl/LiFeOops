@@ -40,6 +40,9 @@ const statPendingTasks = document.getElementById('pendingTasks');
 const statOverdueTasks = document.getElementById('overdueTasks');
 const notificationToggleBtn = document.getElementById('notificationToggleBtn');
 const notificationStatus = document.getElementById('notificationStatus');
+const installPwaBtn = document.getElementById('installPwaBtn');
+const sendTestEmailBtn = document.getElementById('sendTestEmailBtn');
+const testEmailStatus = document.getElementById('testEmailStatus');
 
 let tasks = [];
 let editingTaskId = null;
@@ -47,6 +50,8 @@ let authMode = 'login';
 let supabaseClient = null;
 let currentUser = null;
 let countdownIntervalId = null;
+let deferredInstallPrompt = null;
+let pwaInstallDismissed = false;
 
 function getSupabaseConfig() {
   const globalConfig = window.LIFEOPS_SUPABASE_CONFIG;
@@ -82,6 +87,37 @@ function setAuthMessage(message, type = '') {
 
   if (type) {
     authMessage.classList.add(type);
+  }
+}
+
+async function sendTestEmail() {
+  if (!supabaseClient || !currentUser) {
+    testEmailStatus.textContent = 'Please log in first.';
+    return;
+  }
+
+  sendTestEmailBtn.disabled = true;
+  testEmailStatus.textContent = 'Sending...';
+
+  try {
+    const { error } = await supabaseClient.functions.invoke('resend-email', {
+      body: {
+        to: '1822007gokul@gmail.com',
+        subject: 'LifeOops Email Test',
+        html: '<p>LifeOops email notifications are working.</p>'
+      }
+    });
+
+    if (error) {
+      throw error;
+    }
+
+    testEmailStatus.textContent = 'Test email sent successfully.';
+  } catch (error) {
+    console.error('Test email request failed:', error);
+    testEmailStatus.textContent = 'Test email failed. Please try again.';
+  } finally {
+    sendTestEmailBtn.disabled = false;
   }
 }
 
@@ -349,6 +385,89 @@ async function initializeAuth() {
   }
 }
 
+function updateInstallButton() {
+  if (!installPwaBtn) return;
+
+  const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+
+  if (isStandalone || pwaInstallDismissed || !deferredInstallPrompt) {
+    installPwaBtn.classList.add('hidden');
+    return;
+  }
+
+  installPwaBtn.classList.remove('hidden');
+  installPwaBtn.textContent = 'Install LifeOops';
+}
+
+function handleBeforeInstallPrompt(event) {
+  event.preventDefault();
+
+  if (pwaInstallDismissed) {
+    return;
+  }
+
+  deferredInstallPrompt = event;
+  updateInstallButton();
+}
+
+async function handleInstallClick() {
+  if (!deferredInstallPrompt) {
+    return;
+  }
+
+  pwaInstallDismissed = true;
+  localStorage.setItem('lifeoops.pwa.install.dismissed', 'true');
+  installPwaBtn.classList.add('hidden');
+
+  try {
+    await deferredInstallPrompt.prompt();
+    const { outcome } = await deferredInstallPrompt.userChoice;
+
+    if (outcome === 'accepted') {
+      console.log('PWA installation accepted by the user.');
+    } else {
+      console.log('PWA installation dismissed by the user.');
+    }
+  } catch (error) {
+    console.error('PWA installation prompt failed:', error);
+  }
+
+  deferredInstallPrompt = null;
+  updateInstallButton();
+}
+
+function registerServiceWorker() {
+  if (!('serviceWorker' in navigator)) {
+    return;
+  }
+
+  navigator.serviceWorker.register('./service-worker.js', { scope: './' })
+    .then((registration) => {
+      console.log('LifeOops Service Worker registered');
+      console.log('Service worker scope:', registration.scope);
+    })
+    .catch((error) => {
+      console.error('Service worker registration failed:', error);
+    });
+}
+
+function setupPwaSupport() {
+  pwaInstallDismissed = localStorage.getItem('lifeoops.pwa.install.dismissed') === 'true';
+
+  if (installPwaBtn) {
+    installPwaBtn.addEventListener('click', handleInstallClick);
+  }
+
+  window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+  window.addEventListener('appinstalled', () => {
+    pwaInstallDismissed = true;
+    localStorage.setItem('lifeoops.pwa.install.dismissed', 'true');
+    updateInstallButton();
+  });
+
+  updateInstallButton();
+}
+
 function initAuthUi() {
   authTabs.forEach((tab) => {
     tab.addEventListener('click', () => setAuthMode(tab.dataset.mode));
@@ -356,6 +475,7 @@ function initAuthUi() {
 
   authForm.addEventListener('submit', handleAuthSubmit);
   logoutBtn.addEventListener('click', handleLogout);
+  sendTestEmailBtn.addEventListener('click', sendTestEmail);
   if (notificationToggleBtn) {
     notificationToggleBtn.addEventListener('click', toggleNotifications);
   }
@@ -1094,6 +1214,8 @@ priorityFilter.addEventListener('change', renderTaskSections);
 categoryFilter.addEventListener('change', renderTaskSections);
 form.addEventListener('submit', handleFormSubmit);
 
+registerServiceWorker();
+setupPwaSupport();
 initAuthUi();
 initializeAuth();
 initTaskDashboard();

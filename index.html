@@ -3,7 +3,9 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#7c3aed" />
     <title>LifeOps</title>
+    <link rel="manifest" href="manifest.json" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
@@ -75,6 +77,9 @@
         <div class="user-panel">
           <span id="userEmailLabel">Signed in</span>
           <button id="logoutBtn" class="secondary-btn logout-btn" type="button">Logout</button>
+          <button id="sendTestEmailBtn" class="secondary-btn" type="button">Send Test Email</button>
+          <span id="testEmailStatus" class="notification-status" aria-live="polite"></span>
+          <button id="installPwaBtn" class="secondary-btn install-btn hidden" type="button">Install LifeOops</button>
           <button id="notificationToggleBtn" class="secondary-btn notification-toggle" type="button">🔔 Enable Notifications</button>
           <span id="notificationStatus" class="notification-status">Notifications: Off</span>
         </div>
